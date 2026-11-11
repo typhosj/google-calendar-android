@@ -4,8 +4,11 @@ import android.Manifest
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -27,6 +30,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -70,6 +75,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val GOOGLE_CALENDAR = "com.google.android.calendar"
 private val PERMISSIONS = arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
 private val DATE_TEXT = DateTimeFormatter.ofPattern("dd.MM.yyyy")
 private val TIME_TEXT = DateTimeFormatter.ofPattern("HH:mm")
@@ -135,11 +141,17 @@ private fun Screen() {
     var message by rememberSaveable { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var hasPermission by remember { mutableStateOf(granted(context)) }
-    var calendars by remember { mutableStateOf(emptyList<DeviceCalendar>()) }
-    var target by remember(form.type, calendars) {
-        val saved = prefs.getLong(form.type.name, -1).takeIf { it >= 0 }
-        mutableStateOf(choose(form.type, calendars, saved))
-    }
+    var allCalendars by remember { mutableStateOf(emptyList<DeviceCalendar>()) }
+    val calendars = remember(allCalendars) { writable(allCalendars) }
+    fun savedId(type: EntryType) = prefs.getLong(type.name, -1).takeIf { it >= 0 }
+    var target by remember(form.type, calendars) { mutableStateOf(choose(form.type, calendars, savedId(form.type))) }
+    var problems by remember { mutableStateOf(emptyList<CalendarCheck>()) }
+    var masterSync by remember { mutableStateOf(true) }
+    var picks by remember { mutableIntStateOf(0) }
+
+    val updater = remember { Updater(context) }
+    var newVersion by rememberSaveable { mutableStateOf<String?>(null) }
+    var updating by remember { mutableStateOf(false) }
 
     var agenda by remember { mutableStateOf(emptyList<AgendaItem>()) }
     var nextDay by remember { mutableStateOf<LocalDate?>(null) }
@@ -152,8 +164,18 @@ private fun Screen() {
         hasPermission = granted(context)
     }
     LaunchedEffect(Unit) { if (!hasPermission) request.launch(PERMISSIONS) }
-    LaunchedEffect(hasPermission) {
-        if (hasPermission) calendars = writable(withContext(Dispatchers.IO) { store.calendars() })
+    LaunchedEffect(Unit) { newVersion = withContext(Dispatchers.IO) { updater.available() } }
+    LaunchedEffect(hasPermission, changes, picks) {
+        if (!hasPermission) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            val all = store.calendars()
+            val checks = EntryType.entries.map { checkCalendar(it, all, savedId(it)) }
+            Triple(all, checks.filter { it.status != CalendarStatus.OK }, store.masterSyncOn())
+        }.let { (all, found, master) ->
+            allCalendars = all
+            problems = found
+            masterSync = master
+        }
     }
 
     // Own saves, syncs and other apps all change the provider; a resume catches a new day.
@@ -162,6 +184,7 @@ private fun Screen() {
         onDispose { stop?.invoke() }
     }
     LifecycleResumeEffect(Unit) {
+        hasPermission = granted(context)
         changes++
         onPauseOrDispose { }
     }
@@ -228,6 +251,28 @@ private fun Screen() {
         }
     }
 
+    fun fix(action: () -> Unit) {
+        scope.launch {
+            val failure = withContext(Dispatchers.IO) { runCatching(action).exceptionOrNull() }
+            if (failure != null) {
+                Log.w("Familienkalender", "fix failed: ${failure.javaClass.simpleName}")
+                message = "Das hat nicht geklappt. Bitte in der Google-Kalender-App einschalten."
+            }
+            changes++
+        }
+    }
+
+    fun update() {
+        updating = true
+        scope.launch {
+            val file = withContext(Dispatchers.IO) { runCatching { updater.download() }.getOrNull() }
+            if (file == null || runCatching { updater.install(file) }.isFailure) {
+                message = "Das Update konnte nicht geladen werden. Bitte später noch einmal versuchen."
+            }
+            updating = false
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().safeDrawingPadding(),
         state = listState,
@@ -235,10 +280,49 @@ private fun Screen() {
     ) {
         item(key = "form") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                newVersion?.let { version ->
+                    Notice("Version $version ist verfügbar.", MaterialTheme.colorScheme.secondaryContainer) {
+                        Button(onClick = ::update, enabled = !updating) {
+                            Text(if (updating) "Wird geladen …" else "Aktualisieren")
+                        }
+                    }
+                }
+
                 if (!hasPermission) {
                     Text("Die App braucht Zugriff auf deine Kalender, um Einträge anzulegen.")
                     Button(onClick = { request.launch(PERMISSIONS) }) { Text("Zugriff erlauben") }
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                            )
+                        },
+                    ) { Text("App-Einstellungen öffnen") }
                     return@Column
+                }
+
+                val warning = MaterialTheme.colorScheme.errorContainer
+                if (!masterSync) {
+                    Notice("Die automatische Synchronisierung ist ausgeschaltet. Einträge erreichen Google so womöglich erst später.", warning) {
+                        Button(onClick = { context.startActivity(Intent(Settings.ACTION_SYNC_SETTINGS)) }) {
+                            Text("Einstellungen öffnen")
+                        }
+                    }
+                }
+                problems.forEach { check ->
+                    Notice(hint(check), warning) {
+                        val calendar = check.calendar
+                        when {
+                            check.status == CalendarStatus.SYNC_OFF && calendar != null ->
+                                Button(onClick = { fix { store.enableSync(calendar) } }) { Text("Einschalten") }
+                            check.status == CalendarStatus.MISSING || check.status == CalendarStatus.READ_ONLY -> {
+                                Button(onClick = { fix { store.refresh() } }) { Text("Erneut prüfen") }
+                                context.packageManager.getLaunchIntentForPackage(GOOGLE_CALENDAR)?.let { open ->
+                                    OutlinedButton(onClick = { context.startActivity(open) }) { Text("Google Kalender") }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -287,12 +371,11 @@ private fun Screen() {
                     )
                 }
 
-                if (calendars.isEmpty()) {
-                    Text("Kein beschreibbarer Google-Kalender gefunden. Bitte in der Google-Kalender-App die Synchronisierung einschalten.")
-                } else {
+                if (calendars.isNotEmpty()) {
                     CalendarPicker(target, calendars) {
                         target = it
                         prefs.edit().putLong(form.type.name, it.id).apply()
+                        picks++
                     }
                 }
 
@@ -309,6 +392,16 @@ private fun Screen() {
             }
         }
         items(visible, key = { it.key }) { AgendaRow(it) }
+    }
+}
+
+@Composable
+private fun Notice(text: String, color: Color, actions: @Composable () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = color), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(text)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
+        }
     }
 }
 

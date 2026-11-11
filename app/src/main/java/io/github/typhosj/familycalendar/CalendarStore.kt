@@ -30,6 +30,7 @@ class CalendarStore(context: Context) {
             Calendars.ACCOUNT_TYPE,
             Calendars.CALENDAR_ACCESS_LEVEL,
             Calendars.SYNC_EVENTS,
+            Calendars.OWNER_ACCOUNT,
         )
         return resolver.query(Calendars.CONTENT_URI, columns, null, null, null)?.use { row ->
             buildList {
@@ -42,6 +43,7 @@ class CalendarStore(context: Context) {
                             accountType = row.getString(3).orEmpty(),
                             accessLevel = row.getInt(4),
                             syncEvents = row.getInt(5) == 1,
+                            owner = row.getString(6).orEmpty(),
                         ),
                     )
                 }
@@ -113,10 +115,30 @@ class CalendarStore(context: Context) {
                 .build()
         }
         resolver.applyBatch(CalendarContract.AUTHORITY, operations)
-        val now = Bundle().apply {
-            putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
-            putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
+        ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
+    }
+
+    private val DeviceCalendar.account get() = Account(accountName, accountType)
+
+    private fun syncNow() = Bundle().apply {
+        putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
+        putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
+    }
+
+    fun masterSyncOn(): Boolean = ContentResolver.getMasterSyncAutomatically()
+
+    /** Switches on the sync of one calendar, as the toggle in the Google Calendar app does. */
+    fun enableSync(calendar: DeviceCalendar) {
+        val values = ContentValues().apply {
+            put(Calendars.SYNC_EVENTS, 1)
+            put(Calendars.VISIBLE, 1)
         }
-        ContentResolver.requestSync(Account(calendar.accountName, calendar.accountType), CalendarContract.AUTHORITY, now)
+        resolver.update(ContentUris.withAppendedId(Calendars.CONTENT_URI, calendar.id), values, null, null)
+        ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
+    }
+
+    /** Asks every account to sync, so a calendar shared a moment ago can appear. */
+    fun refresh() {
+        ContentResolver.requestSync(null, CalendarContract.AUTHORITY, syncNow())
     }
 }
