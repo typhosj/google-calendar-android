@@ -1,0 +1,368 @@
+package io.github.typhosj.familycalendar
+
+import android.Manifest
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private val PERMISSIONS = arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+private val DATE_TEXT = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+private val TIME_TEXT = DateTimeFormatter.ofPattern("HH:mm")
+
+/** Entries shown at first, and how many more each time the end of the list is reached. */
+private const val AGENDA_PAGE = 5
+
+/** A sync changes many rows in a burst; the list reloads once it has been quiet this long. */
+private const val RELOAD_DELAY_MS = 300L
+
+private val EntryType.label: String
+    get() = when (this) {
+        EntryType.REMINDER -> "Erinnerung"
+        EntryType.APPOINTMENT -> "Termin"
+        EntryType.BIRTHDAY -> "Geburtstag"
+    }
+
+private val EntryType.icon: Int
+    get() = when (this) {
+        EntryType.REMINDER -> R.drawable.ic_reminder
+        EntryType.APPOINTMENT -> R.drawable.ic_appointment
+        EntryType.BIRTHDAY -> R.drawable.ic_birthday
+    }
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+                Surface(Modifier.fillMaxSize()) { Screen() }
+            }
+        }
+    }
+}
+
+private fun granted(context: Context) =
+    PERMISSIONS.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
+private fun pickDate(context: Context, value: LocalDate, onPick: (LocalDate) -> Unit) {
+    DatePickerDialog(
+        context,
+        { _, year, month, day -> onPick(LocalDate.of(year, month + 1, day)) },
+        value.year,
+        value.monthValue - 1,
+        value.dayOfMonth,
+    ).show()
+}
+
+private fun pickTime(context: Context, value: LocalTime, onPick: (LocalTime) -> Unit) {
+    TimePickerDialog(context, { _, hour, minute -> onPick(LocalTime.of(hour, minute)) }, value.hour, value.minute, true).show()
+}
+
+@Composable
+private fun Screen() {
+    val context = LocalContext.current
+    val store = remember { CalendarStore(context) }
+    val prefs = remember { context.getSharedPreferences("targets", Context.MODE_PRIVATE) }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+
+    var form by rememberSaveable { mutableStateOf(defaults(LocalDateTime.now())) }
+    var message by rememberSaveable { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var hasPermission by remember { mutableStateOf(granted(context)) }
+    var calendars by remember { mutableStateOf(emptyList<DeviceCalendar>()) }
+    var target by remember(form.type, calendars) {
+        val saved = prefs.getLong(form.type.name, -1).takeIf { it >= 0 }
+        mutableStateOf(choose(form.type, calendars, saved))
+    }
+
+    var agenda by remember { mutableStateOf(emptyList<AgendaItem>()) }
+    var nextDay by remember { mutableStateOf<LocalDate?>(null) }
+    var shown by remember { mutableIntStateOf(AGENDA_PAGE) }
+    var loaded by remember { mutableStateOf(false) }
+    var changes by remember { mutableIntStateOf(0) }
+    var reloads by remember { mutableIntStateOf(0) }
+
+    val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        hasPermission = granted(context)
+    }
+    LaunchedEffect(Unit) { if (!hasPermission) request.launch(PERMISSIONS) }
+    LaunchedEffect(hasPermission) {
+        if (hasPermission) calendars = writable(withContext(Dispatchers.IO) { store.calendars() })
+    }
+
+    // Own saves, syncs and other apps all change the provider; a resume catches a new day.
+    DisposableEffect(hasPermission) {
+        val stop = if (hasPermission) store.observe { changes++ } else null
+        onDispose { stop?.invoke() }
+    }
+    LifecycleResumeEffect(Unit) {
+        changes++
+        onPauseOrDispose { }
+    }
+
+    fun fetch(from: LocalDate, to: LocalDate): List<Instance> =
+        store.instances(calendars.map { it.id }, from, to, ZoneId.systemDefault())
+
+    LaunchedEffect(calendars, changes) {
+        if (calendars.isEmpty()) return@LaunchedEffect
+        delay(RELOAD_DELAY_MS)
+        val page = withContext(Dispatchers.IO) {
+            loadPage(::fetch, LocalDate.now(), shown, LocalDateTime.now(), ZoneId.systemDefault())
+        }
+        agenda = page.items
+        nextDay = page.next
+        loaded = true
+        reloads++
+    }
+
+    val visible = agenda.take(shown)
+    val hasMore = shown < agenda.size || nextDay != null
+    LaunchedEffect(listState, visible.size, hasMore, reloads) {
+        if (!loaded || !hasMore) return@LaunchedEffect
+        // The form is item 0; comparing the total skips a layout from before the list grew.
+        val total = visible.size + 1
+        snapshotFlow {
+            listState.layoutInfo.run { totalItemsCount == total && visibleItemsInfo.lastOrNull()?.index == total - 1 }
+        }.first { it }
+        val from = nextDay
+        if (shown + AGENDA_PAGE > agenda.size && from != null) {
+            val page = withContext(Dispatchers.IO) {
+                loadPage(::fetch, from, AGENDA_PAGE, LocalDateTime.now(), ZoneId.systemDefault())
+            }
+            agenda = (agenda + page.items).distinctBy { it.key }
+            nextDay = page.next
+        }
+        shown += AGENDA_PAGE
+    }
+
+    fun save() {
+        val entry = when (val built = buildEntry(form, ZoneId.systemDefault())) {
+            is Built.Error -> {
+                message = built.text
+                return
+            }
+            is Built.Ok -> built.entry
+        }
+        val calendar = target
+        if (calendar == null) {
+            message = "Bitte einen Kalender wählen."
+            return
+        }
+        saving = true
+        scope.launch {
+            val failure = withContext(Dispatchers.IO) { runCatching { store.insert(calendar, entry) }.exceptionOrNull() }
+            if (failure == null) {
+                form = defaults(LocalDateTime.now()).copy(type = form.type)
+                message = "Gespeichert."
+            } else {
+                Log.w("Familienkalender", "insert failed: ${failure.javaClass.simpleName}")
+                message = "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
+            }
+            saving = false
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().safeDrawingPadding(),
+        state = listState,
+        contentPadding = PaddingValues(16.dp),
+    ) {
+        item(key = "form") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (!hasPermission) {
+                    Text("Die App braucht Zugriff auf deine Kalender, um Einträge anzulegen.")
+                    Button(onClick = { request.launch(PERMISSIONS) }) { Text("Zugriff erlauben") }
+                    return@Column
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EntryType.entries.forEach { type ->
+                        FilterChip(
+                            selected = form.type == type,
+                            onClick = {
+                                form = form.copy(type = type)
+                                message = ""
+                            },
+                            label = { Text(type.label) },
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = form.text,
+                    onValueChange = { form = form.copy(text = it) },
+                    label = { Text(if (form.type == EntryType.BIRTHDAY) "Name" else "Text") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                val appointment = form.type == EntryType.APPOINTMENT
+                val timed = form.type != EntryType.BIRTHDAY && !(appointment && form.allDay)
+
+                if (appointment) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Switch(checked = form.allDay, onCheckedChange = { form = followStart(form.copy(allDay = it)) })
+                        Text("Ganztägig")
+                    }
+                    Text("Von")
+                }
+                DateTimeRow(
+                    date = form.startDate,
+                    time = form.startTime.takeIf { timed },
+                    onDate = { form = followStart(form.copy(startDate = it)) },
+                    onTime = { form = followStart(form.copy(startTime = it)) },
+                )
+                if (appointment) {
+                    Text("Bis")
+                    DateTimeRow(
+                        date = form.endDate,
+                        time = form.endTime.takeIf { timed },
+                        onDate = { form = form.copy(endDate = it) },
+                        onTime = { form = form.copy(endTime = it) },
+                    )
+                }
+
+                if (calendars.isEmpty()) {
+                    Text("Kein beschreibbarer Google-Kalender gefunden. Bitte in der Google-Kalender-App die Synchronisierung einschalten.")
+                } else {
+                    CalendarPicker(target, calendars) {
+                        target = it
+                        prefs.edit().putLong(form.type.name, it.id).apply()
+                    }
+                }
+
+                Button(onClick = ::save, enabled = !saving, modifier = Modifier.fillMaxWidth()) { Text("Speichern") }
+                if (message.isNotEmpty()) Text(message)
+
+                if (loaded) {
+                    Text(
+                        if (agenda.isEmpty()) "Keine kommenden Einträge." else "Nächste Einträge",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+            }
+        }
+        items(visible, key = { it.key }) { AgendaRow(it) }
+    }
+}
+
+@Composable
+private fun AgendaRow(item: AgendaItem) {
+    val colors = MaterialTheme.colorScheme
+    val tone = when (item.tone) {
+        Tone.NOW -> colors.error
+        Tone.NEXT -> if (isSystemInDarkTheme()) Color(0xFF66FF66) else Color(0xFF2E7D32)
+        Tone.PLAIN -> colors.onSurfaceVariant
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(painterResource(item.type.icon), contentDescription = item.type.label, tint = tone, modifier = Modifier.size(24.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.day, style = MaterialTheme.typography.labelMedium, color = tone)
+            Text(item.title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (item.right.isNotEmpty()) {
+            Text(item.right, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+        }
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun DateTimeRow(date: LocalDate, time: LocalTime?, onDate: (LocalDate) -> Unit, onTime: (LocalTime) -> Unit) {
+    val context = LocalContext.current
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { pickDate(context, date, onDate) }) { Text(date.format(DATE_TEXT)) }
+        if (time != null) {
+            OutlinedButton(onClick = { pickTime(context, time, onTime) }) { Text(time.format(TIME_TEXT)) }
+        }
+    }
+}
+
+@Composable
+private fun CalendarPicker(target: DeviceCalendar?, calendars: List<DeviceCalendar>, onPick: (DeviceCalendar) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { open = true }) { Text(target?.let { "Kalender: ${it.name}" } ?: "Kalender wählen") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            calendars.forEach { calendar ->
+                DropdownMenuItem(
+                    text = { Text("${calendar.name} (${calendar.accountName})") },
+                    onClick = {
+                        onPick(calendar)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
