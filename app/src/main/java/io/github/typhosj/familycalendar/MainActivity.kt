@@ -138,6 +138,8 @@ private fun Screen() {
     val listState = rememberLazyListState()
 
     var form by rememberSaveable { mutableStateOf(defaults(LocalDateTime.now())) }
+    /** The form as last suggested, to tell an untouched date or time from one the user chose. */
+    var suggestion by rememberSaveable { mutableStateOf(form) }
     var message by rememberSaveable { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var hasPermission by remember { mutableStateOf(granted(context)) }
@@ -186,6 +188,10 @@ private fun Screen() {
     LifecycleResumeEffect(Unit) {
         hasPermission = granted(context)
         changes++
+        refreshSuggestion(form, suggestion, LocalDateTime.now())?.let {
+            form = it
+            suggestion = it
+        }
         onPauseOrDispose { }
     }
 
@@ -242,6 +248,7 @@ private fun Screen() {
             val failure = withContext(Dispatchers.IO) { runCatching { store.insert(calendar, entry) }.exceptionOrNull() }
             if (failure == null) {
                 form = defaults(LocalDateTime.now()).copy(type = form.type)
+                suggestion = form
                 message = "Gespeichert."
             } else {
                 Log.w("Familienkalender", "insert failed: ${failure.javaClass.simpleName}")

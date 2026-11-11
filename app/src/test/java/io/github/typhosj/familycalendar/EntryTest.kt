@@ -204,4 +204,36 @@ class EntryTest {
         assertEquals(day.plusDays(1), night.startDate)
         assertEquals(LocalTime.MIDNIGHT, night.startTime)
     }
+
+    private val morning = LocalDateTime.of(2026, 11, 14, 10, 20)
+    private val suggested = defaults(morning)
+
+    @Test
+    fun `an untouched old suggestion moves to the next full hour and keeps the rest`() {
+        val typed = suggested.copy(type = EntryType.APPOINTMENT, text = "Zahnarzt", allDay = true)
+        val result = refreshSuggestion(typed, suggested, morning.plusHours(2))
+        assertEquals(typed.copy(startTime = LocalTime.of(13, 0), endTime = LocalTime.of(14, 0)), result)
+    }
+
+    @Test
+    fun `an untouched suggestion moves across midnight`() {
+        val result = refreshSuggestion(suggested, suggested, LocalDateTime.of(2026, 11, 14, 23, 5))
+        assertEquals(day.plusDays(1), result?.startDate)
+        assertEquals(LocalTime.MIDNIGHT, result?.startTime)
+        assertEquals(LocalTime.of(1, 0), result?.endTime)
+    }
+
+    @Test
+    fun `nothing changes within the same hour`() {
+        assertNull(refreshSuggestion(suggested, suggested, morning.plusMinutes(39)))
+    }
+
+    @Test
+    fun `a date or time the user chose stays`() {
+        val later = morning.plusHours(3)
+        assertNull(refreshSuggestion(suggested.copy(startDate = day.plusDays(2)), suggested, later))
+        assertNull(refreshSuggestion(suggested.copy(startTime = LocalTime.of(8, 0)), suggested, later))
+        assertNull(refreshSuggestion(suggested.copy(endDate = day.plusDays(1)), suggested, later))
+        assertNull(refreshSuggestion(suggested.copy(endTime = LocalTime.of(15, 0)), suggested, later))
+    }
 }

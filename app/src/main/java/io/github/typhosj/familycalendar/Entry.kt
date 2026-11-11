@@ -130,3 +130,21 @@ fun defaults(now: LocalDateTime): Form {
         endTime = end.toLocalTime(),
     )
 }
+
+/**
+ * When the app comes back: dates and times that still hold the earlier [suggestion] move to the next
+ * full hour, so the suggestion does not drift into the past. Text, type and all-day stay; a date or
+ * time the user chose stays too. Null when nothing changes.
+ */
+fun refreshSuggestion(form: Form, suggestion: Form, now: LocalDateTime): Form? {
+    val untouched = form.startDate == suggestion.startDate && form.startTime == suggestion.startTime &&
+        form.endDate == suggestion.endDate && form.endTime == suggestion.endTime
+    val fresh = defaults(now)
+    val result = form.copy(
+        startDate = fresh.startDate,
+        startTime = fresh.startTime,
+        endDate = fresh.endDate,
+        endTime = fresh.endTime,
+    )
+    return if (untouched && result != form) result else null
+}
