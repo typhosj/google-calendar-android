@@ -16,8 +16,10 @@ the choice is kept per entry type. On every start it checks that each calendar c
 switches sync on where it can and otherwise says what to do, for example ask the owner to share a
 calendar.
 
-When a newer release exists, the app offers it on the screen; Android asks for confirmation. The
-app contacts GitHub for this and nothing else.
+When a newer release exists, the app offers it on the screen. The first update through the app asks
+once for permission to install apps and for a confirmation; from Android 12 on, later updates may
+install without a confirmation. Google Play Protect may still ask to scan a new version. The app
+contacts GitHub for this and nothing else.
 
 Editing and deleting stay with the Google Calendar app.
 

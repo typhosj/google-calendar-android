@@ -1,5 +1,6 @@
 package io.github.typhosj.familycalendar
 
+import android.content.pm.PackageInstaller
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -40,6 +41,29 @@ class UpdateTest {
     fun `same or older is not newer`() {
         assertFalse(isNewer("0.1.0", "0.1.0"))
         assertFalse(isNewer("0.1.0", "0.2.0"))
+    }
+
+    @Test
+    fun `the installer result asks the user only when Android wants a confirmation`() {
+        assertEquals(InstallOutcome.CONFIRM, installOutcome(PackageInstaller.STATUS_PENDING_USER_ACTION))
+        assertEquals(InstallOutcome.DONE, installOutcome(PackageInstaller.STATUS_SUCCESS))
+    }
+
+    @Test
+    fun `every other installer result is a failure`() {
+        for (status in listOf(
+            PackageInstaller.STATUS_FAILURE,
+            PackageInstaller.STATUS_FAILURE_ABORTED,
+            PackageInstaller.STATUS_FAILURE_BLOCKED,
+            PackageInstaller.STATUS_FAILURE_CONFLICT,
+            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+            PackageInstaller.STATUS_FAILURE_INVALID,
+            PackageInstaller.STATUS_FAILURE_STORAGE,
+            -999,
+            42,
+        )) {
+            assertEquals("status $status", InstallOutcome.FAILED, installOutcome(status))
+        }
     }
 
     @Test

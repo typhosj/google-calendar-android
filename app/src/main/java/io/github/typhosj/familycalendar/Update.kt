@@ -1,8 +1,12 @@
 package io.github.typhosj.familycalendar
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import androidx.core.content.FileProvider
+import android.content.pm.PackageInstaller
+import android.os.Build
+import android.widget.Toast
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -10,7 +14,6 @@ import java.net.URL
 
 private const val RELEASES = "https://github.com/typhosj/google-calendar-android/releases"
 private const val APK_NAME = "familienkalender.apk"
-private const val APK_TYPE = "application/vnd.android.package-archive"
 private const val TIMEOUT_MS = 15_000
 private const val MAX_APK_BYTES = 64L * 1024 * 1024
 
@@ -80,13 +83,68 @@ class Updater(private val context: Context) {
         return file
     }
 
-    /** Android only accepts the file if it carries the signature of the installed app. */
+    /**
+     * Installs through a PackageInstaller session; Android only accepts the file if it carries the
+     * signature of the installed app. From Android 12 on, an app that updates itself may skip the
+     * confirmation; where Android still wants one, [InstallReceiver] shows it.
+     */
     fun install(file: File) {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, APK_TYPE)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setAppPackageName(context.packageName)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
+        }
+        val id = installer.createSession(params)
+        try {
+            installer.openSession(id).use { session ->
+                file.inputStream().use { input ->
+                    session.openWrite(APK_NAME, 0, file.length()).use { output ->
+                        input.copyTo(output)
+                        session.fsync(output)
+                    }
+                }
+                // Mutable, because the installer adds its result to the intent.
+                val result = PendingIntent.getBroadcast(
+                    context,
+                    id,
+                    Intent(context, InstallReceiver::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+                )
+                session.commit(result.intentSender)
+            }
+        } catch (error: Exception) {
+            installer.abandonSession(id)
+            throw error
+        }
+    }
+}
+
+enum class InstallOutcome { CONFIRM, DONE, FAILED }
+
+/** What the installer result means for the user. */
+fun installOutcome(status: Int): InstallOutcome = when (status) {
+    PackageInstaller.STATUS_PENDING_USER_ACTION -> InstallOutcome.CONFIRM
+    PackageInstaller.STATUS_SUCCESS -> InstallOutcome.DONE
+    else -> InstallOutcome.FAILED
+}
+
+/** Receives the result of the update session: shows Android's confirmation, or says it failed. */
+class InstallReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (installOutcome(intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE))) {
+            InstallOutcome.CONFIRM -> {
+                @Suppress("DEPRECATION")
+                val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
+                context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            InstallOutcome.DONE -> Unit
+            InstallOutcome.FAILED -> Toast.makeText(
+                context,
+                "Das Update konnte nicht installiert werden.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 }
