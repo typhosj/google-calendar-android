@@ -122,13 +122,13 @@ class CalendarStore(context: Context) {
     }
 
     /**
-     * What editing needs from one event row; null when the row is gone.
+     * What editing needs from one event row; null when the row is gone or deleted and only waits for the sync.
      * Known limit: a series defined only by RDATE (no RRULE) counts as a single row.
      */
     fun event(id: Long): EventRow? {
-        val columns = arrayOf(Events.RRULE, Events.DTSTART, Events.ORIGINAL_ID, Events.ALL_DAY)
+        val columns = arrayOf(Events.RRULE, Events.DTSTART, Events.ORIGINAL_ID, Events.ALL_DAY, Events.DELETED)
         return resolver.query(ContentUris.withAppendedId(Events.CONTENT_URI, id), columns, null, null, null)?.use { row ->
-            if (!row.moveToFirst()) {
+            if (!row.moveToFirst() || row.getInt(4) == 1) {
                 null
             } else {
                 EventRow(
