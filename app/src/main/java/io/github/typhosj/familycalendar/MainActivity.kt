@@ -345,7 +345,13 @@ private fun Screen() {
             when {
                 failure != null -> {
                     Log.w("Familienkalender", "save failed: ${failure.javaClass.simpleName}")
-                    if (unchanged) message = "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
+                    if (unchanged) {
+                        message = if (failure is EntryGone) {
+                            "Diesen Eintrag gibt es nicht mehr."
+                        } else {
+                            "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
+                        }
+                    }
                 }
                 !unchanged -> {}
                 stillEditing != null -> {
@@ -386,7 +392,11 @@ private fun Screen() {
                     startNew("Gelöscht.")
                 } else {
                     confirmDelete = false
-                    message = "Löschen fehlgeschlagen. Bitte später noch einmal versuchen."
+                    message = if (failure is EntryGone) {
+                        "Diesen Eintrag gibt es nicht mehr."
+                    } else {
+                        "Löschen fehlgeschlagen. Bitte später noch einmal versuchen."
+                    }
                 }
             }
             saving = false

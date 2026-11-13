@@ -18,6 +18,9 @@ import android.provider.CalendarContract.Reminders
 import java.time.LocalDate
 import java.time.ZoneId
 
+/** The entry to change is no longer there: an update found no row, or the provider refused the exception. */
+class EntryGone : Exception()
+
 /** The system calendar provider; its sync adapter carries entries to Google. */
 class CalendarStore(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
@@ -156,7 +159,7 @@ class CalendarStore(context: Context) {
      * Known limit: a one-off row in the birthday calendar gets DURATION P1D instead of DTEND when saved as a birthday.
      */
     fun update(calendar: DeviceCalendar, eventId: Long, entry: Entry) {
-        check(resolver.update(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), times(entry), null, null) == 1)
+        if (resolver.update(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), times(entry), null, null) == 0) throw EntryGone()
         ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
     }
 
@@ -165,6 +168,8 @@ class CalendarStore(context: Context) {
      * duration (the provider copies the series row and parses it, a null fails) and no end (an exception insert
      * does not allow one; the provider sets start plus series duration). A second write through the plain event
      * URI of the new row (the returned exception URI cannot be updated) puts the edited end on it.
+     * Known limit: the two writes are not atomic. If the second one fails, the exception keeps the series
+     * duration, and a retry inserts a second exception for the same occurrence.
      */
     fun updateInstance(calendar: DeviceCalendar, eventId: Long, instanceBegin: Long, entry: Entry) {
         val values = times(entry).apply {
@@ -172,9 +177,9 @@ class CalendarStore(context: Context) {
             remove(Events.DTEND)
             put(Events.ORIGINAL_INSTANCE_TIME, instanceBegin)
         }
-        val uri = requireNotNull(resolver.insert(ContentUris.withAppendedId(Events.CONTENT_EXCEPTION_URI, eventId), values))
+        val uri = resolver.insert(ContentUris.withAppendedId(Events.CONTENT_EXCEPTION_URI, eventId), values) ?: throw EntryGone()
         val row = ContentUris.withAppendedId(Events.CONTENT_URI, ContentUris.parseId(uri))
-        check(resolver.update(row, times(entry), null, null) == 1)
+        if (resolver.update(row, times(entry), null, null) == 0) throw EntryGone()
         ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
     }
 
@@ -190,7 +195,7 @@ class CalendarStore(context: Context) {
             put(Events.ORIGINAL_INSTANCE_TIME, instanceBegin)
             put(Events.STATUS, Events.STATUS_CANCELED)
         }
-        requireNotNull(resolver.insert(ContentUris.withAppendedId(Events.CONTENT_EXCEPTION_URI, eventId), values))
+        resolver.insert(ContentUris.withAppendedId(Events.CONTENT_EXCEPTION_URI, eventId), values) ?: throw EntryGone()
         ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
     }
 
