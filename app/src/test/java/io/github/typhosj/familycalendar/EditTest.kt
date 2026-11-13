@@ -134,6 +134,15 @@ class EditTest {
         assertEquals(DeletePlan.CANCEL_INSTANCE, planDelete(editing(EntryType.REMINDER, true)))
     }
 
+    @Test
+    fun `deleting an occurrence that is already its own row cancels it, so Google does not bring back the original`() {
+        val changed = editing(EntryType.APPOINTMENT, false).copy(exception = true)
+        assertEquals(DeletePlan.CANCEL_ROW, planDelete(changed))
+        assertEquals(DeletePlan.CANCEL_ROW, planDelete(changed.copy(type = EntryType.REMINDER)))
+        assertEquals(SavePlan.UPDATE_ROW, planSave(changed, EntryType.APPOINTMENT))
+        assertEquals(SavePlan.MOVE_FROM_ROW, planSave(changed, EntryType.REMINDER))
+    }
+
     private val birthday = allDay("2026-11-15", "2026-11-16", "Geburtstage", 3)
 
     private fun row(recurring: Boolean = false, originalId: Long? = null, allDay: Boolean = true) =
@@ -152,7 +161,7 @@ class EditTest {
     fun `a changed occurrence of a Google series is edited as its own row, not as the series`() {
         val instance = timed("2026-11-19T18:00", "2026-11-19T19:00")
         assertEquals(
-            Editing(10, 1, EntryType.APPOINTMENT, false, instance.begin, false),
+            Editing(10, 1, EntryType.APPOINTMENT, false, instance.begin, false, exception = true),
             editingFor(instance, EntryType.APPOINTMENT, row(originalId = 77, allDay = false), null),
         )
     }

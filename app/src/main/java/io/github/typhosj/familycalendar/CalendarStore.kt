@@ -199,6 +199,13 @@ class CalendarStore(context: Context) {
         ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
     }
 
+    /** Cancels a changed occurrence that already has its own row, so the original does not come back. */
+    fun cancelRow(calendar: DeviceCalendar, eventId: Long) {
+        val values = ContentValues().apply { put(Events.STATUS, Events.STATUS_CANCELED) }
+        if (resolver.update(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), values, null, null) != 1) throw EntryGone()
+        ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
+    }
+
     private val DeviceCalendar.account get() = Account(accountName, accountType)
 
     private fun syncNow() = Bundle().apply {

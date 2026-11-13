@@ -16,6 +16,8 @@ data class Editing(
     /** Instances.BEGIN of the tapped occurrence, the ORIGINAL_INSTANCE_TIME of an exception. */
     val instanceBegin: Long,
     val allDay: Boolean,
+    /** The row is a changed occurrence of a Google series (it has an ORIGINAL_ID); it is cancelled, never deleted. */
+    val exception: Boolean = false,
 ) : Serializable
 
 /** The type a list row can be edited as, or null when its calendar is not the family calendar of its type. */
@@ -35,7 +37,15 @@ data class EventRow(val recurring: Boolean, val start: Long, val originalId: Lon
  */
 fun editingFor(instance: Instance, type: EntryType, row: EventRow, master: EventRow?): Editing? {
     if (type != EntryType.BIRTHDAY) {
-        return Editing(instance.eventId, instance.calendarId, type, row.recurring, instance.begin, instance.allDay)
+        return Editing(
+            instance.eventId,
+            instance.calendarId,
+            type,
+            row.recurring,
+            instance.begin,
+            instance.allDay,
+            exception = row.originalId != null,
+        )
     }
     val series = (if (row.originalId != null) master else row) ?: return null
     if (!series.allDay) return null
@@ -90,9 +100,17 @@ fun planSave(editing: Editing, newType: EntryType): SavePlan = when {
     else -> SavePlan.MOVE_FROM_ROW
 }
 
-enum class DeletePlan { DELETE_ROW, CANCEL_INSTANCE }
+enum class DeletePlan { DELETE_ROW, CANCEL_INSTANCE, CANCEL_ROW }
 
-fun planDelete(editing: Editing): DeletePlan = if (editing.alone()) DeletePlan.CANCEL_INSTANCE else DeletePlan.DELETE_ROW
+/**
+ * Deleting the row of a changed occurrence would only drop the change, and Google brings the original
+ * occurrence back (seen on the device); such a row gets the status cancelled instead.
+ */
+fun planDelete(editing: Editing): DeletePlan = when {
+    editing.exception && editing.type != EntryType.BIRTHDAY -> DeletePlan.CANCEL_ROW
+    editing.alone() -> DeletePlan.CANCEL_INSTANCE
+    else -> DeletePlan.DELETE_ROW
+}
 
 enum class DeleteAction { ASK, DELETE }
 

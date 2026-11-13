@@ -285,6 +285,13 @@ private fun Screen() {
         }
     }
 
+    /** Deletes the edited entry, or cancels the occurrence, as [planDelete] says; blocking. */
+    fun removeEntry(current: Editing, old: DeviceCalendar) = when (planDelete(current)) {
+        DeletePlan.CANCEL_INSTANCE -> store.cancelInstance(old, current.eventId, current.instanceBegin)
+        DeletePlan.CANCEL_ROW -> store.cancelRow(old, current.eventId)
+        DeletePlan.DELETE_ROW -> store.delete(old, current.eventId)
+    }
+
     fun save() {
         val entry = when (val built = buildEntry(form, zone)) {
             is Built.Error -> {
@@ -321,13 +328,7 @@ private fun Screen() {
                                 // Known limit: a type change can leave a duplicate when the app is killed
                                 // between insert and delete; the user deletes it from the list.
                                 val newId = store.insert(calendar, entry)
-                                val removed = runCatching {
-                                    if (planDelete(current) == DeletePlan.CANCEL_INSTANCE) {
-                                        store.cancelInstance(old, current.eventId, current.instanceBegin)
-                                    } else {
-                                        store.delete(old, current.eventId)
-                                    }
-                                }
+                                val removed = runCatching { removeEntry(current, old) }
                                 if (removed.isFailure) {
                                     Log.w("Familienkalender", "delete after move failed: ${removed.exceptionOrNull()?.javaClass?.simpleName}")
                                     afterMove(newId, calendar, type, entry.startMillis, entry.allDay)
@@ -379,13 +380,7 @@ private fun Screen() {
         saving = true
         scope.launch {
             val failure = withContext(Dispatchers.IO) {
-                runCatching {
-                    if (planDelete(current) == DeletePlan.CANCEL_INSTANCE) {
-                        store.cancelInstance(old, current.eventId, current.instanceBegin)
-                    } else {
-                        store.delete(old, current.eventId)
-                    }
-                }.exceptionOrNull()
+                runCatching { removeEntry(current, old) }.exceptionOrNull()
             }
             if (failure != null) Log.w("Familienkalender", "delete failed: ${failure.javaClass.simpleName}")
             if (editing == current) {
