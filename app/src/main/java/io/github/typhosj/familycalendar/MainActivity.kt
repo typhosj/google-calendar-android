@@ -15,6 +15,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -142,6 +144,10 @@ private fun Screen() {
     var suggestion by rememberSaveable { mutableStateOf(form) }
     var message by rememberSaveable { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
+    /** The entry the form edits; null for a new entry. */
+    var editing by rememberSaveable { mutableStateOf<Editing?>(null) }
+    /** "Löschen" was pressed once; any change of the form turns it back. */
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
     var hasPermission by remember { mutableStateOf(granted(context)) }
     var allCalendars by remember { mutableStateOf(emptyList<DeviceCalendar>()) }
     val calendars = remember(allCalendars) { writable(allCalendars) }
@@ -150,6 +156,13 @@ private fun Screen() {
     var problems by remember { mutableStateOf(emptyList<CalendarCheck>()) }
     var masterSync by remember { mutableStateOf(true) }
     var picks by remember { mutableIntStateOf(0) }
+    val targets = EntryType.entries.associateWith { choose(it, calendars, savedId(it)) }
+    val zone = ZoneId.systemDefault()
+
+    fun change(next: Form) {
+        form = next
+        confirmDelete = false
+    }
 
     val updater = remember { Updater(context) }
     var newVersion by rememberSaveable { mutableStateOf<String?>(null) }
@@ -188,9 +201,11 @@ private fun Screen() {
     LifecycleResumeEffect(Unit) {
         hasPermission = granted(context)
         changes++
-        refreshSuggestion(form, suggestion, LocalDateTime.now())?.let {
-            form = it
-            suggestion = it
+        if (editing == null) {
+            refreshSuggestion(form, suggestion, LocalDateTime.now())?.let {
+                form = it
+                suggestion = it
+            }
         }
         onPauseOrDispose { }
     }
@@ -230,8 +245,40 @@ private fun Screen() {
         shown += AGENDA_PAGE
     }
 
+    fun startNew(text: String) {
+        editing = null
+        confirmDelete = false
+        form = defaults(LocalDateTime.now()).copy(type = form.type)
+        suggestion = form
+        message = text
+    }
+
+    fun open(item: AgendaItem) {
+        val instance = item.instance
+        val type = editableType(instance, targets) ?: return
+        scope.launch {
+            val row = withContext(Dispatchers.IO) { runCatching { store.event(instance.eventId) }.getOrNull() }
+            if (row == null) {
+                message = "Diesen Eintrag gibt es nicht mehr."
+                return@launch
+            }
+            // A changed occurrence of a series is its own row; a birthday still changes as the series.
+            val master = if (type == EntryType.BIRTHDAY && row.originalId != null) {
+                withContext(Dispatchers.IO) { runCatching { store.event(row.originalId) }.getOrNull() }
+            } else {
+                row
+            }
+            val seriesId = if (type == EntryType.BIRTHDAY && row.originalId != null) row.originalId else instance.eventId
+            form = formFor(instance, type, if (type == EntryType.BIRTHDAY) master?.start else null, LocalDateTime.now(), zone)
+            editing = Editing(seriesId, instance.calendarId, type, master?.recurring ?: row.recurring, instance.begin, instance.allDay)
+            confirmDelete = false
+            message = ""
+            listState.animateScrollToItem(0)
+        }
+    }
+
     fun save() {
-        val entry = when (val built = buildEntry(form, ZoneId.systemDefault())) {
+        val entry = when (val built = buildEntry(form, zone)) {
             is Built.Error -> {
                 message = built.text
                 return
@@ -243,16 +290,82 @@ private fun Screen() {
             message = "Bitte einen Kalender wählen."
             return
         }
+        val current = editing
+        val old = current?.let { e -> calendars.find { it.id == e.calendarId } }
+        if (current != null && old == null) {
+            message = "Diesen Eintrag gibt es nicht mehr."
+            return
+        }
         saving = true
         scope.launch {
-            val failure = withContext(Dispatchers.IO) { runCatching { store.insert(calendar, entry) }.exceptionOrNull() }
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (current == null || old == null) {
+                        store.insert(calendar, entry)
+                        null
+                    } else {
+                        when (planSave(current, form.type)) {
+                            SavePlan.UPDATE_ROW -> store.update(old, current.eventId, entry).let { null }
+                            SavePlan.UPDATE_INSTANCE -> store.updateInstance(old, current.eventId, current.instanceBegin, entry).let { null }
+                            SavePlan.MOVE_FROM_ROW, SavePlan.MOVE_FROM_INSTANCE -> {
+                                // Known limit: a type change can leave a duplicate when the app is killed
+                                // between insert and delete; the user deletes it from the list.
+                                val newId = store.insert(calendar, entry)
+                                val removed = runCatching {
+                                    if (planDelete(current) == DeletePlan.CANCEL_INSTANCE) {
+                                        store.cancelInstance(old, current.eventId, current.instanceBegin)
+                                    } else {
+                                        store.delete(old, current.eventId)
+                                    }
+                                }
+                                if (removed.isFailure) afterMove(newId, calendar, form.type, entry.startMillis, entry.allDay) else null
+                            }
+                        }
+                    }
+                }
+            }
+            val failure = outcome.exceptionOrNull()
+            val stillEditing = outcome.getOrNull()
+            when {
+                failure != null -> {
+                    Log.w("Familienkalender", "save failed: ${failure.javaClass.simpleName}")
+                    message = "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
+                }
+                stillEditing != null -> {
+                    Log.w("Familienkalender", "delete after move failed")
+                    editing = stillEditing
+                    message = "Neuer Eintrag angelegt, der alte konnte nicht gelöscht werden."
+                }
+                else -> startNew("Gespeichert.")
+            }
+            saving = false
+        }
+    }
+
+    fun remove() {
+        val current = editing ?: return
+        val old = calendars.find { it.id == current.calendarId } ?: return
+        if (onDeletePress(confirmDelete) == DeleteAction.ASK) {
+            confirmDelete = true
+            return
+        }
+        saving = true
+        scope.launch {
+            val failure = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (planDelete(current) == DeletePlan.CANCEL_INSTANCE) {
+                        store.cancelInstance(old, current.eventId, current.instanceBegin)
+                    } else {
+                        store.delete(old, current.eventId)
+                    }
+                }.exceptionOrNull()
+            }
             if (failure == null) {
-                form = defaults(LocalDateTime.now()).copy(type = form.type)
-                suggestion = form
-                message = "Gespeichert."
+                startNew("Gelöscht.")
             } else {
-                Log.w("Familienkalender", "insert failed: ${failure.javaClass.simpleName}")
-                message = "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
+                Log.w("Familienkalender", "delete failed: ${failure.javaClass.simpleName}")
+                confirmDelete = false
+                message = "Löschen fehlgeschlagen. Bitte später noch einmal versuchen."
             }
             saving = false
         }
@@ -332,12 +445,15 @@ private fun Screen() {
                     }
                 }
 
+                if (editing != null) {
+                    Text("Eintrag bearbeiten", style = MaterialTheme.typography.titleLarge)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     EntryType.entries.forEach { type ->
                         FilterChip(
                             selected = form.type == type,
                             onClick = {
-                                form = form.copy(type = type)
+                                change(form.copy(type = type))
                                 message = ""
                             },
                             label = { Text(type.label) },
@@ -347,7 +463,7 @@ private fun Screen() {
 
                 OutlinedTextField(
                     value = form.text,
-                    onValueChange = { form = form.copy(text = it) },
+                    onValueChange = { change(form.copy(text = it)) },
                     label = { Text(if (form.type == EntryType.BIRTHDAY) "Name" else "Text") },
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -357,7 +473,7 @@ private fun Screen() {
 
                 if (appointment) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Switch(checked = form.allDay, onCheckedChange = { form = followStart(form.copy(allDay = it)) })
+                        Switch(checked = form.allDay, onCheckedChange = { change(followStart(form.copy(allDay = it))) })
                         Text("Ganztägig")
                     }
                     Text("Von")
@@ -365,16 +481,16 @@ private fun Screen() {
                 DateTimeRow(
                     date = form.startDate,
                     time = form.startTime.takeIf { timed },
-                    onDate = { form = followStart(form.copy(startDate = it)) },
-                    onTime = { form = followStart(form.copy(startTime = it)) },
+                    onDate = { change(followStart(form.copy(startDate = it))) },
+                    onTime = { change(followStart(form.copy(startTime = it))) },
                 )
                 if (appointment) {
                     Text("Bis")
                     DateTimeRow(
                         date = form.endDate,
                         time = form.endTime.takeIf { timed },
-                        onDate = { form = form.copy(endDate = it) },
-                        onTime = { form = form.copy(endTime = it) },
+                        onDate = { change(form.copy(endDate = it)) },
+                        onTime = { change(form.copy(endTime = it)) },
                     )
                 }
 
@@ -387,6 +503,21 @@ private fun Screen() {
                 }
 
                 Button(onClick = ::save, enabled = !saving, modifier = Modifier.fillMaxWidth()) { Text("Speichern") }
+                if (editing != null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = ::remove,
+                            enabled = !saving,
+                            colors = if (confirmDelete) {
+                                ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)
+                            } else {
+                                ButtonDefaults.filledTonalButtonColors()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (confirmDelete) "Wirklich löschen?" else "Löschen") }
+                        OutlinedButton(onClick = { startNew("") }, enabled = !saving, modifier = Modifier.weight(1f)) { Text("Abbrechen") }
+                    }
+                }
                 if (message.isNotEmpty()) Text(message)
 
                 if (loaded) {
@@ -398,7 +529,9 @@ private fun Screen() {
                 }
             }
         }
-        items(visible, key = { it.key }) { AgendaRow(it) }
+        items(visible, key = { it.key }) { item ->
+            AgendaRow(item, onClick = if (editableType(item.instance, targets) != null) ({ open(item) }) else null)
+        }
     }
 }
 
@@ -413,7 +546,7 @@ private fun Notice(text: String, color: Color, actions: @Composable () -> Unit) 
 }
 
 @Composable
-private fun AgendaRow(item: AgendaItem) {
+private fun AgendaRow(item: AgendaItem, onClick: (() -> Unit)?) {
     val colors = MaterialTheme.colorScheme
     val tone = when (item.tone) {
         Tone.NOW -> colors.error
@@ -421,7 +554,7 @@ private fun AgendaRow(item: AgendaItem) {
         Tone.PLAIN -> colors.onSurfaceVariant
     }
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {

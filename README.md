@@ -21,7 +21,8 @@ once for permission to install apps and for a confirmation; from Android 12 on, 
 install without a confirmation. Google Play Protect may still ask to scan a new version. The app
 contacts GitHub for this and nothing else.
 
-Editing and deleting stay with the Google Calendar app.
+Tap an entry of the family calendars in the list to change or delete it; delete asks once more.
+The Google Calendar app stays the way for everything else.
 
 ## Build
 
