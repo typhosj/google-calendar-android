@@ -588,7 +588,7 @@ private fun AgendaRow(item: AgendaItem, onClick: (() -> Unit)?) {
         Tone.PLAIN -> colors.onSurfaceVariant
     }
     Row(
-        Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(vertical = 8.dp),
+        Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClickLabel = "Bearbeiten", onClick = onClick) else Modifier).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
