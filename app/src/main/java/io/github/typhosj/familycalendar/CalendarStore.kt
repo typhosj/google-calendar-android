@@ -161,8 +161,9 @@ class CalendarStore(context: Context) {
 
     /**
      * Changes one occurrence of a series alone: the provider stores it as an exception. The insert carries no
-     * duration (the provider copies the series row and parses it, a null fails) and no end (the provider sets
-     * start plus series duration); a second write puts the edited end on the new exception row.
+     * duration (the provider copies the series row and parses it, a null fails) and no end (an exception insert
+     * does not allow one; the provider sets start plus series duration). A second write through the plain event
+     * URI of the new row (the returned exception URI cannot be updated) puts the edited end on it.
      */
     fun updateInstance(calendar: DeviceCalendar, eventId: Long, instanceBegin: Long, entry: Entry) {
         val values = times(entry).apply {
@@ -171,7 +172,8 @@ class CalendarStore(context: Context) {
             put(Events.ORIGINAL_INSTANCE_TIME, instanceBegin)
         }
         val uri = requireNotNull(resolver.insert(ContentUris.withAppendedId(Events.CONTENT_EXCEPTION_URI, eventId), values))
-        check(resolver.update(uri, times(entry), null, null) == 1)
+        val row = ContentUris.withAppendedId(Events.CONTENT_URI, ContentUris.parseId(uri))
+        check(resolver.update(row, times(entry), null, null) == 1)
         ContentResolver.requestSync(calendar.account, CalendarContract.AUTHORITY, syncNow())
     }
 
