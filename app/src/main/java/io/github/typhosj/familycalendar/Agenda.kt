@@ -24,6 +24,7 @@ data class Instance(
     val end: Long,
     val allDay: Boolean,
     val calendarName: String,
+    val calendarId: Long = 0,
 )
 
 enum class Tone { NOW, NEXT, PLAIN }
@@ -36,6 +37,7 @@ data class AgendaItem(
     val right: String,
     val type: EntryType,
     val tone: Tone,
+    val instance: Instance,
 )
 
 /** Rows of the loaded windows, and the day to go on from, or null at the horizon. */
@@ -78,6 +80,7 @@ private fun toItem(instance: Instance, now: LocalDateTime, zone: ZoneId): Agenda
         right = right,
         type = type,
         tone = tone,
+        instance = instance,
     )
 }
 
