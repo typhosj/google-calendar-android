@@ -299,7 +299,8 @@ private fun Screen() {
             return
         }
         val current = editing
-        val old = current?.let { e -> calendars.find { it.id == e.calendarId } }
+        // Only the calendar resolved for the entry's type may be written; another one stays display only.
+        val old = current?.let { e -> targets[e.type]?.takeIf { it.id == e.calendarId } }
         if (current != null && old == null) {
             message = "Diesen Eintrag gibt es nicht mehr."
             return
@@ -366,7 +367,7 @@ private fun Screen() {
 
     fun remove() {
         val current = editing ?: return
-        val old = calendars.find { it.id == current.calendarId }
+        val old = targets[current.type]?.takeIf { it.id == current.calendarId }
         if (old == null) {
             message = "Diesen Eintrag gibt es nicht mehr."
             return
