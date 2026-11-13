@@ -255,22 +255,30 @@ private fun Screen() {
 
     fun open(item: AgendaItem) {
         val instance = item.instance
+        if (saving) return
         val type = editableType(instance, targets) ?: return
         scope.launch {
-            val row = withContext(Dispatchers.IO) { runCatching { store.event(instance.eventId) }.getOrNull() }
-            if (row == null) {
+            // A changed occurrence of a series is its own row; a birthday still changes as the series.
+            val looked = withContext(Dispatchers.IO) {
+                runCatching {
+                    val found = store.event(instance.eventId)
+                    val series = if (found != null && type == EntryType.BIRTHDAY && found.originalId != null) store.event(found.originalId) else found
+                    found to series
+                }
+            }
+            looked.exceptionOrNull()?.let {
+                Log.w("Familienkalender", "open failed: ${it.javaClass.simpleName}")
+                message = "Das hat nicht geklappt. Bitte später noch einmal versuchen."
+                return@launch
+            }
+            val (row, master) = looked.getOrThrow()
+            if (row == null || master == null) {
                 message = "Diesen Eintrag gibt es nicht mehr."
                 return@launch
             }
-            // A changed occurrence of a series is its own row; a birthday still changes as the series.
-            val master = if (type == EntryType.BIRTHDAY && row.originalId != null) {
-                withContext(Dispatchers.IO) { runCatching { store.event(row.originalId) }.getOrNull() }
-            } else {
-                row
-            }
             val seriesId = if (type == EntryType.BIRTHDAY && row.originalId != null) row.originalId else instance.eventId
-            form = formFor(instance, type, if (type == EntryType.BIRTHDAY) master?.start else null, LocalDateTime.now(), zone)
-            editing = Editing(seriesId, instance.calendarId, type, master?.recurring ?: row.recurring, instance.begin, instance.allDay)
+            form = formFor(instance, type, if (type == EntryType.BIRTHDAY) master.start else null, LocalDateTime.now(), zone)
+            editing = Editing(seriesId, instance.calendarId, type, master.recurring, instance.begin, instance.allDay)
             confirmDelete = false
             message = ""
             listState.animateScrollToItem(0)
@@ -296,6 +304,7 @@ private fun Screen() {
             message = "Diesen Eintrag gibt es nicht mehr."
             return
         }
+        val type = form.type
         saving = true
         scope.launch {
             val outcome = withContext(Dispatchers.IO) {
@@ -304,7 +313,7 @@ private fun Screen() {
                         store.insert(calendar, entry)
                         null
                     } else {
-                        when (planSave(current, form.type)) {
+                        when (planSave(current, type)) {
                             SavePlan.UPDATE_ROW -> store.update(old, current.eventId, entry).let { null }
                             SavePlan.UPDATE_INSTANCE -> store.updateInstance(old, current.eventId, current.instanceBegin, entry).let { null }
                             SavePlan.MOVE_FROM_ROW, SavePlan.MOVE_FROM_INSTANCE -> {
@@ -318,7 +327,12 @@ private fun Screen() {
                                         store.delete(old, current.eventId)
                                     }
                                 }
-                                if (removed.isFailure) afterMove(newId, calendar, form.type, entry.startMillis, entry.allDay) else null
+                                if (removed.isFailure) {
+                                    Log.w("Familienkalender", "delete after move failed: ${removed.exceptionOrNull()?.javaClass?.simpleName}")
+                                    afterMove(newId, calendar, type, entry.startMillis, entry.allDay)
+                                } else {
+                                    null
+                                }
                             }
                         }
                     }
@@ -326,13 +340,15 @@ private fun Screen() {
             }
             val failure = outcome.exceptionOrNull()
             val stillEditing = outcome.getOrNull()
+            // The user may have opened another entry meanwhile; then the state is theirs.
+            val unchanged = editing == current
             when {
                 failure != null -> {
                     Log.w("Familienkalender", "save failed: ${failure.javaClass.simpleName}")
-                    message = "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
+                    if (unchanged) message = "Speichern fehlgeschlagen. Bitte später noch einmal versuchen."
                 }
+                !unchanged -> {}
                 stillEditing != null -> {
-                    Log.w("Familienkalender", "delete after move failed")
                     editing = stillEditing
                     message = "Neuer Eintrag angelegt, der alte konnte nicht gelöscht werden."
                 }
@@ -344,7 +360,11 @@ private fun Screen() {
 
     fun remove() {
         val current = editing ?: return
-        val old = calendars.find { it.id == current.calendarId } ?: return
+        val old = calendars.find { it.id == current.calendarId }
+        if (old == null) {
+            message = "Diesen Eintrag gibt es nicht mehr."
+            return
+        }
         if (onDeletePress(confirmDelete) == DeleteAction.ASK) {
             confirmDelete = true
             return
@@ -360,12 +380,14 @@ private fun Screen() {
                     }
                 }.exceptionOrNull()
             }
-            if (failure == null) {
-                startNew("Gelöscht.")
-            } else {
-                Log.w("Familienkalender", "delete failed: ${failure.javaClass.simpleName}")
-                confirmDelete = false
-                message = "Löschen fehlgeschlagen. Bitte später noch einmal versuchen."
+            if (failure != null) Log.w("Familienkalender", "delete failed: ${failure.javaClass.simpleName}")
+            if (editing == current) {
+                if (failure == null) {
+                    startNew("Gelöscht.")
+                } else {
+                    confirmDelete = false
+                    message = "Löschen fehlgeschlagen. Bitte später noch einmal versuchen."
+                }
             }
             saving = false
         }
@@ -494,7 +516,8 @@ private fun Screen() {
                     )
                 }
 
-                if (calendars.isNotEmpty()) {
+                // A same-type edit always writes to the entry's own calendar, so there is nothing to pick.
+                if (calendars.isNotEmpty() && editing?.type != form.type) {
                     CalendarPicker(target, calendars) {
                         target = it
                         prefs.edit().putLong(form.type.name, it.id).apply()
@@ -530,7 +553,7 @@ private fun Screen() {
             }
         }
         items(visible, key = { it.key }) { item ->
-            AgendaRow(item, onClick = if (editableType(item.instance, targets) != null) ({ open(item) }) else null)
+            AgendaRow(item, onClick = if (!saving && editableType(item.instance, targets) != null) ({ open(item) }) else null)
         }
     }
 }
