@@ -22,7 +22,8 @@ install without a confirmation. Google Play Protect may still ask to scan a new 
 contacts GitHub for this and nothing else.
 
 Tap an entry of the family calendars in the list to change or delete it; delete asks once more.
-The Google Calendar app stays the way for everything else.
+A birthday changes as a whole, one occurrence of another series alone. Everything else stays with
+the Google Calendar app.
 
 ## Build
 
