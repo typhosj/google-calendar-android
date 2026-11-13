@@ -73,6 +73,13 @@ class EditTest {
     }
 
     @Test
+    fun `a timed row whose end is before its start gets an end one hour after the start`() {
+        val form = formFor(timed("2026-11-19T18:00", "2026-11-19T17:00"), EntryType.APPOINTMENT, null, now, berlin)
+        assertEquals(LocalDate.of(2026, 11, 19), form.endDate)
+        assertEquals(LocalTime.of(19, 0), form.endTime)
+    }
+
+    @Test
     fun `an all-day appointment shows its last day inclusive and suggests times`() {
         val one = formFor(allDay("2026-11-14", "2026-11-15"), EntryType.APPOINTMENT, null, now, berlin)
         assertTrue(one.allDay)
@@ -113,14 +120,64 @@ class EditTest {
         assertEquals(SavePlan.MOVE_FROM_ROW, planSave(editing(EntryType.REMINDER, false), EntryType.APPOINTMENT))
         assertEquals(SavePlan.MOVE_FROM_ROW, planSave(editing(EntryType.BIRTHDAY, true), EntryType.APPOINTMENT))
         assertEquals(SavePlan.MOVE_FROM_INSTANCE, planSave(editing(EntryType.APPOINTMENT, true), EntryType.REMINDER))
+        assertEquals(SavePlan.UPDATE_ROW, planSave(editing(EntryType.BIRTHDAY, false), EntryType.BIRTHDAY))
+        assertEquals(SavePlan.MOVE_FROM_INSTANCE, planSave(editing(EntryType.REMINDER, true), EntryType.APPOINTMENT))
+        assertEquals(SavePlan.MOVE_FROM_ROW, planSave(editing(EntryType.BIRTHDAY, true), EntryType.REMINDER))
     }
 
     @Test
     fun `delete removes a row or a birthday series, and cancels one instance of another series`() {
         assertEquals(DeletePlan.DELETE_ROW, planDelete(editing(EntryType.APPOINTMENT, false)))
         assertEquals(DeletePlan.DELETE_ROW, planDelete(editing(EntryType.BIRTHDAY, true)))
+        assertEquals(DeletePlan.DELETE_ROW, planDelete(editing(EntryType.BIRTHDAY, false)))
         assertEquals(DeletePlan.CANCEL_INSTANCE, planDelete(editing(EntryType.APPOINTMENT, true)))
         assertEquals(DeletePlan.CANCEL_INSTANCE, planDelete(editing(EntryType.REMINDER, true)))
+    }
+
+    private val birthday = allDay("2026-11-15", "2026-11-16", "Geburtstage", 3)
+
+    private fun row(recurring: Boolean = false, originalId: Long? = null, allDay: Boolean = true) =
+        EventRow(recurring, utc("1950-11-15"), originalId, allDay)
+
+    @Test
+    fun `a plain row is edited as itself`() {
+        val instance = timed("2026-11-19T18:00", "2026-11-19T19:00")
+        assertEquals(
+            Editing(10, 1, EntryType.APPOINTMENT, false, instance.begin, false),
+            editingFor(instance, EntryType.APPOINTMENT, row(allDay = false), null),
+        )
+    }
+
+    @Test
+    fun `a changed occurrence of a Google series is edited as its own row, not as the series`() {
+        val instance = timed("2026-11-19T18:00", "2026-11-19T19:00")
+        assertEquals(
+            Editing(10, 1, EntryType.APPOINTMENT, false, instance.begin, false),
+            editingFor(instance, EntryType.APPOINTMENT, row(originalId = 77, allDay = false), null),
+        )
+    }
+
+    @Test
+    fun `a birthday master is edited as the series`() {
+        assertEquals(
+            Editing(11, 3, EntryType.BIRTHDAY, true, birthday.begin, true),
+            editingFor(birthday, EntryType.BIRTHDAY, row(recurring = true), null),
+        )
+    }
+
+    @Test
+    fun `a changed birthday occurrence is edited through its master`() {
+        assertEquals(
+            Editing(77, 3, EntryType.BIRTHDAY, true, birthday.begin, true),
+            editingFor(birthday, EntryType.BIRTHDAY, row(originalId = 77), row(recurring = true)),
+        )
+    }
+
+    @Test
+    fun `a birthday without its master or with a timed master opens nothing`() {
+        assertNull(editingFor(birthday, EntryType.BIRTHDAY, row(originalId = 77), null))
+        assertNull(editingFor(birthday, EntryType.BIRTHDAY, row(originalId = 77), row(recurring = true, allDay = false)))
+        assertNull(editingFor(birthday, EntryType.BIRTHDAY, row(recurring = true, allDay = false), null))
     }
 
     @Test

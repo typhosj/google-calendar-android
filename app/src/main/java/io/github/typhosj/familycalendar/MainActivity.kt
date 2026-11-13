@@ -253,7 +253,7 @@ private fun Screen() {
         message = text
     }
 
-    fun open(item: AgendaItem) {
+    fun openEntry(item: AgendaItem) {
         val instance = item.instance
         if (saving) return
         val type = editableType(instance, targets) ?: return
@@ -262,8 +262,8 @@ private fun Screen() {
             val looked = withContext(Dispatchers.IO) {
                 runCatching {
                     val found = store.event(instance.eventId)
-                    val series = if (found != null && type == EntryType.BIRTHDAY && found.originalId != null) store.event(found.originalId) else found
-                    found to series
+                    val master = found?.originalId?.takeIf { type == EntryType.BIRTHDAY }?.let { store.event(it) }
+                    found to master
                 }
             }
             looked.exceptionOrNull()?.let {
@@ -272,13 +272,13 @@ private fun Screen() {
                 return@launch
             }
             val (row, master) = looked.getOrThrow()
-            if (row == null || master == null) {
+            val next = row?.let { editingFor(instance, type, it, master) }
+            if (row == null || next == null) {
                 message = "Diesen Eintrag gibt es nicht mehr."
                 return@launch
             }
-            val seriesId = if (type == EntryType.BIRTHDAY && row.originalId != null) row.originalId else instance.eventId
-            form = formFor(instance, type, if (type == EntryType.BIRTHDAY) master.start else null, LocalDateTime.now(), zone)
-            editing = Editing(seriesId, instance.calendarId, type, master.recurring, instance.begin, instance.allDay)
+            form = formFor(instance, type, if (type == EntryType.BIRTHDAY) (master ?: row).start else null, LocalDateTime.now(), zone)
+            editing = next
             confirmDelete = false
             message = ""
             listState.animateScrollToItem(0)
@@ -553,7 +553,7 @@ private fun Screen() {
             }
         }
         items(visible, key = { it.key }) { item ->
-            AgendaRow(item, onClick = if (!saving && editableType(item.instance, targets) != null) ({ open(item) }) else null)
+            AgendaRow(item, onClick = if (!saving && editableType(item.instance, targets) != null) ({ openEntry(item) }) else null)
         }
     }
 }

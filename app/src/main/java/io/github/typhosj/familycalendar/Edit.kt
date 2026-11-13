@@ -24,12 +24,31 @@ fun editableType(instance: Instance, targets: Map<EntryType, DeviceCalendar?>): 
     return type.takeIf { targets[type]?.id == instance.calendarId }
 }
 
+/** What editing needs from one event row. */
+data class EventRow(val recurring: Boolean, val start: Long, val originalId: Long?, val allDay: Boolean)
+
+/**
+ * The event a tap edits: the tapped row itself, or for a birthday its series master, so the series
+ * changes as a whole. [master] is the row named by [row]'s ORIGINAL_ID, looked up only for a changed
+ * birthday occurrence. Null when nothing can be edited: the master is gone, or it is not all-day
+ * (its date would depend on the time zone).
+ */
+fun editingFor(instance: Instance, type: EntryType, row: EventRow, master: EventRow?): Editing? {
+    if (type != EntryType.BIRTHDAY) {
+        return Editing(instance.eventId, instance.calendarId, type, row.recurring, instance.begin, instance.allDay)
+    }
+    val series = (if (row.originalId != null) master else row) ?: return null
+    if (!series.allDay) return null
+    return Editing(row.originalId ?: instance.eventId, instance.calendarId, type, series.recurring, instance.begin, instance.allDay)
+}
+
 private fun at(millis: Long, zone: ZoneId): LocalDateTime = Instant.ofEpochMilli(millis).atZone(zone).toLocalDateTime()
 
 /**
  * Form values for a list row, with the adapter's rules: an all-day end is shown inclusive, a birthday
  * shows the start of its series (the real birth date), a reminder's hidden end is one hour after its
- * start. Times an entry does not have come from the usual suggestion.
+ * start. Times an entry does not have come from the usual suggestion. [masterStart] is read as an
+ * all-day start in UTC; only all-day masters get here, [editingFor] turns a timed one away.
  */
 fun formFor(instance: Instance, type: EntryType, masterStart: Long?, now: LocalDateTime, zone: ZoneId): Form {
     val suggested = defaults(now)

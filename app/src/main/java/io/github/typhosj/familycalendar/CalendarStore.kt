@@ -121,12 +121,12 @@ class CalendarStore(context: Context) {
         return ContentUris.parseId(requireNotNull(results[0].uri))
     }
 
-    /** What editing needs from one event row; null when the row is gone. */
-    data class EventRow(val recurring: Boolean, val start: Long, val originalId: Long?)
-
-    /** Known limit: a series defined only by RDATE (no RRULE) counts as a single row. */
+    /**
+     * What editing needs from one event row; null when the row is gone.
+     * Known limit: a series defined only by RDATE (no RRULE) counts as a single row.
+     */
     fun event(id: Long): EventRow? {
-        val columns = arrayOf(Events.RRULE, Events.DTSTART, Events.ORIGINAL_ID)
+        val columns = arrayOf(Events.RRULE, Events.DTSTART, Events.ORIGINAL_ID, Events.ALL_DAY)
         return resolver.query(ContentUris.withAppendedId(Events.CONTENT_URI, id), columns, null, null, null)?.use { row ->
             if (!row.moveToFirst()) {
                 null
@@ -135,6 +135,7 @@ class CalendarStore(context: Context) {
                     recurring = !row.getString(0).isNullOrEmpty(),
                     start = row.getLong(1),
                     originalId = if (row.isNull(2)) null else row.getString(2).toLongOrNull(),
+                    allDay = row.getInt(3) == 1,
                 )
             }
         }
