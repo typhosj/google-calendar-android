@@ -17,6 +17,14 @@ enum class EntryType(val calendarName: String) {
     BIRTHDAY("Geburtstage"),
 }
 
+/** The type's name on the screen. */
+internal val EntryType.label: String
+    get() = when (this) {
+        EntryType.REMINDER -> "Erinnerung"
+        EntryType.APPOINTMENT -> "Termin"
+        EntryType.BIRTHDAY -> "Geburtstag"
+    }
+
 /** What the screen holds; serializable so it survives a rotation. */
 data class Form(
     val type: EntryType = EntryType.REMINDER,
@@ -45,7 +53,7 @@ sealed interface Built {
     data class Error(val text: String) : Built
 }
 
-private fun collapse(text: String): String =
+internal fun collapse(text: String): String =
     text.map { if (it.isWhitespace()) ' ' else it }.joinToString("").trim().replace(Regex(" +"), " ")
 
 /** All-day values are UTC midnights in the provider, never shifted through the local zone. */

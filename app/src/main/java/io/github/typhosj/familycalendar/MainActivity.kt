@@ -88,13 +88,6 @@ private const val AGENDA_PAGE = 5
 /** A sync changes many rows in a burst; the list reloads once it has been quiet this long. */
 private const val RELOAD_DELAY_MS = 300L
 
-private val EntryType.label: String
-    get() = when (this) {
-        EntryType.REMINDER -> "Erinnerung"
-        EntryType.APPOINTMENT -> "Termin"
-        EntryType.BIRTHDAY -> "Geburtstag"
-    }
-
 private val EntryType.icon: Int
     get() = when (this) {
         EntryType.REMINDER -> R.drawable.ic_reminder
