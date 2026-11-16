@@ -218,6 +218,27 @@ private fun Screen() {
         reloads++
     }
 
+    // Earlier titles come only from the resolved reminder and appointment calendars, never from birthdays
+    // or a personal calendar.
+    var known by remember { mutableStateOf(emptyList<Suggestion>()) }
+    val typeOf = listOf(EntryType.REMINDER, EntryType.APPOINTMENT)
+        .mapNotNull { type -> targets[type]?.let { it.id to type } }
+        .toMap()
+    LaunchedEffect(typeOf, changes) {
+        if (typeOf.isEmpty()) {
+            known = emptyList()
+            return@LaunchedEffect
+        }
+        delay(RELOAD_DELAY_MS)
+        val today = LocalDate.now()
+        withContext(Dispatchers.IO) {
+            runCatching {
+                suggestions(store.instances(typeOf.keys.toList(), today.minusDays(SUGGEST_DAYS), today.plusDays(SUGGEST_DAYS), zone), typeOf, zone)
+            }
+        }.onSuccess { known = it }
+            .onFailure { Log.w("Familienkalender", "suggestions failed: ${it.javaClass.simpleName}") }
+    }
+
     val visible = agenda.take(shown)
     val hasMore = shown < agenda.size || nextDay != null
     LaunchedEffect(listState, visible.size, hasMore, reloads) {
@@ -488,6 +509,14 @@ private fun Screen() {
                     label = { Text(if (form.type == EntryType.BIRTHDAY) "Name" else "Text") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (editing == null && form.type != EntryType.BIRTHDAY) {
+                    matching(form.text, known).forEach { suggestion ->
+                        SuggestionRow(suggestion) {
+                            change(applySuggestion(form, suggestion))
+                            message = ""
+                        }
+                    }
+                }
 
                 val appointment = form.type == EntryType.APPOINTMENT
                 val timed = form.type != EntryType.BIRTHDAY && !(appointment && form.allDay)
@@ -563,6 +592,21 @@ private fun Notice(text: String, color: Color, actions: @Composable () -> Unit) 
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(text)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionRow(suggestion: Suggestion, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClickLabel = "Übernehmen", onClick = onClick).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(painterResource(suggestion.type.icon), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+        Column(Modifier.weight(1f)) {
+            Text(suggestion.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(describe(suggestion), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

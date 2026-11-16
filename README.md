@@ -25,6 +25,10 @@ Tap an entry of the family calendars in the list to change or delete it; delete 
 A birthday changes as a whole, one occurrence of another series alone. Everything else stays with
 the Google Calendar app.
 
+While you type the text of a new reminder or appointment, the app suggests titles you used before in
+`Erinnerungen` and `Termine` (from two letters on, up to four). A tap takes over title, type, time
+and duration; the date you chose stays. Birthdays and other calendars are never suggested.
+
 ## Build
 
 Needs JDK 17 or newer and the Android SDK (platform 36).
