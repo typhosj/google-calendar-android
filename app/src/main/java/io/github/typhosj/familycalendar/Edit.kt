@@ -2,7 +2,9 @@ package io.github.typhosj.familycalendar
 
 import java.io.Serializable
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.MonthDay
 import java.time.ZoneId
 import java.time.ZoneOffset
 
@@ -55,17 +57,29 @@ fun editingFor(instance: Instance, type: EntryType, row: EventRow, master: Event
 private fun at(millis: Long, zone: ZoneId): LocalDateTime = Instant.ofEpochMilli(millis).atZone(zone).toLocalDateTime()
 
 /**
+ * Month and day of the occurrence in the first year on or after the series start. A series moved in Google can
+ * start off its rule (start 2025-11-03 with BYMONTHDAY=22); the master day would then move it on the next save.
+ * A 29 February that year lacks keeps the series start.
+ */
+private fun birthDay(master: LocalDate, occurrence: LocalDate): LocalDate {
+    val day = MonthDay.from(occurrence)
+    val year = master.year + if (day < MonthDay.from(master)) 1 else 0
+    return if (day.isValidYear(year)) day.atYear(year) else master
+}
+
+/**
  * Form values for a list row, with the adapter's rules: an all-day end is shown inclusive, a birthday
- * shows the start of its series (the real birth date), a reminder's hidden end is one hour after its
- * start. Times an entry does not have come from the usual suggestion. [masterStart] is read as an
- * all-day start in UTC; only all-day masters get here, [editingFor] turns a timed one away.
+ * shows the year its series starts (the real birth year) and the day of the tapped occurrence, a
+ * reminder's hidden end is one hour after its start. Times an entry does not have come from the usual
+ * suggestion. [masterStart] is read as an all-day start in UTC; only all-day masters get here,
+ * [editingFor] turns a timed one away.
  */
 fun formFor(instance: Instance, type: EntryType, masterStart: Long?, now: LocalDateTime, zone: ZoneId): Form {
     val suggested = defaults(now)
     val base = suggested.copy(type = type, text = instance.title)
     if (type == EntryType.BIRTHDAY) {
-        val day = masterStart?.let { at(it, ZoneOffset.UTC).toLocalDate() }
-            ?: at(instance.begin, if (instance.allDay) ZoneOffset.UTC else zone).toLocalDate()
+        val occurrence = at(instance.begin, if (instance.allDay) ZoneOffset.UTC else zone).toLocalDate()
+        val day = masterStart?.let { birthDay(at(it, ZoneOffset.UTC).toLocalDate(), occurrence) } ?: occurrence
         return base.copy(startDate = day, endDate = day, allDay = false)
     }
     if (instance.allDay) {

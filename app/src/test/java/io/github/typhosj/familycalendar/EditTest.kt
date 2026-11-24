@@ -112,6 +112,25 @@ class EditTest {
     }
 
     @Test
+    fun `a birthday moved in Google shows the day of its occurrence in the first year from its series start`() {
+        // Master start 2025-11-03 with FREQ=YEARLY;BYMONTHDAY=22: the master day would move it on the next save.
+        val moved = allDay("2026-11-22", "2026-11-23", "Geburtstage", 3)
+        val form = formFor(moved, EntryType.BIRTHDAY, utc("2025-11-03"), now, berlin)
+        assertEquals(LocalDate.of(2025, 11, 22), form.startDate)
+        assertEquals(LocalDate.of(2025, 11, 22), form.endDate)
+        val january = allDay("2027-01-02", "2027-01-03", "Geburtstage", 3)
+        assertEquals(LocalDate.of(1951, 1, 2), formFor(january, EntryType.BIRTHDAY, utc("1950-12-31"), now, berlin).startDate)
+        assertEquals(LocalDate.of(1950, 1, 2), formFor(january, EntryType.BIRTHDAY, utc("1950-01-02"), now, berlin).startDate)
+    }
+
+    @Test
+    fun `a 29 February birthday keeps the master date when that year has no such day`() {
+        val leap = allDay("2028-02-29", "2028-03-01", "Geburtstage", 3)
+        assertEquals(LocalDate.of(2025, 2, 28), formFor(leap, EntryType.BIRTHDAY, utc("2025-02-28"), now, berlin).startDate)
+        assertEquals(LocalDate.of(2024, 2, 29), formFor(leap, EntryType.BIRTHDAY, utc("2024-02-29"), now, berlin).startDate)
+    }
+
+    @Test
     fun `save changes a row, one instance of a series, or moves the entry on a type change`() {
         assertEquals(SavePlan.UPDATE_ROW, planSave(editing(EntryType.APPOINTMENT, false), EntryType.APPOINTMENT))
         assertEquals(SavePlan.UPDATE_ROW, planSave(editing(EntryType.BIRTHDAY, true), EntryType.BIRTHDAY))
