@@ -21,6 +21,23 @@ import java.time.ZoneId
 /** The entry to change is no longer there: an update found no row, or the provider refused the exception. */
 class EntryGone : Exception()
 
+/**
+ * Columns of a row update by provider column; an end and a duration exclude each other, so the unused one is
+ * cleared. A birthday also gets its plain yearly rule: imported series carry BYMONTH/BYMONTHDAY, which keep every
+ * occurrence on the old day when only DTSTART moves. Other entries leave the rule column alone.
+ * Known limit: the rule replaces the old one, so an UNTIL of a birthday series is dropped; a series split in
+ * Google ("this and following") may then show twice.
+ */
+internal fun rowColumns(entry: Entry): Map<String, Any?> = buildMap {
+    put(Events.TITLE, entry.title)
+    put(Events.DTSTART, entry.startMillis)
+    put(Events.DTEND, entry.endMillis)
+    put(Events.DURATION, entry.duration)
+    put(Events.ALL_DAY, if (entry.allDay) 1 else 0)
+    put(Events.EVENT_TIMEZONE, entry.timeZone)
+    if (!entry.rrule.isNullOrEmpty()) put(Events.RRULE, entry.rrule)
+}
+
 /** The system calendar provider; its sync adapter carries entries to Google. */
 class CalendarStore(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
@@ -144,18 +161,21 @@ class CalendarStore(context: Context) {
         }
     }
 
-    /** Title and times of a row; an end and a duration exclude each other, so the unused one is cleared. */
+    /** Title and times of a row (plus a birthday's rule) as provider values. */
     private fun times(entry: Entry) = ContentValues().apply {
-        put(Events.TITLE, entry.title)
-        put(Events.DTSTART, entry.startMillis)
-        if (entry.endMillis != null) put(Events.DTEND, entry.endMillis) else putNull(Events.DTEND)
-        if (entry.duration != null) put(Events.DURATION, entry.duration) else putNull(Events.DURATION)
-        put(Events.ALL_DAY, if (entry.allDay) 1 else 0)
-        put(Events.EVENT_TIMEZONE, entry.timeZone)
+        for ((column, value) in rowColumns(entry)) {
+            when (value) {
+                null -> putNull(column)
+                is String -> put(column, value)
+                is Long -> put(column, value)
+                is Int -> put(column, value)
+                else -> error("Unexpected value for $column")
+            }
+        }
     }
 
     /**
-     * Changes a single entry, or a birthday series as a whole (its RRULE stays).
+     * Changes a single entry, or a birthday series as a whole (with the plain yearly rule, see [rowColumns]).
      * Known limit: a one-off row in the birthday calendar gets DURATION P1D instead of DTEND when saved as a birthday.
      */
     fun update(calendar: DeviceCalendar, eventId: Long, entry: Entry) {
