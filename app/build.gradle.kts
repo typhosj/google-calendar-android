@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.typhosj.familycalendar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.3.0"
+        versionCode = 9
+        versionName = "0.3.1"
     }
 
     signingConfigs {
